@@ -195,13 +195,14 @@ public final class IsValidBoundedLocalCache<K, V>
         Sets.difference(seen, ImmutableSet.copyOf(cache.data.values())));
     desc.expectThat(errorMsg, cache.size(), is(seen.size()));
 
-    final long weighted = weightedSize;
     if (cache.evicts()) {
+      long weighted = weightedSize;
+      long expectedWeightedSize = Math.max(0, cache.weightedSize());
       Supplier<String> error = () -> String.format(
           "WeightedSize != link weights [%d vs %d] {%d vs %d}",
-          cache.adjustedWeightedSize(), weighted, seen.size(), cache.size());
+          expectedWeightedSize, weighted, seen.size(), cache.size());
       desc.expectThat("non-negative weight", weightedSize, is(greaterThanOrEqualTo(0L)));
-      desc.expectThat(error, cache.adjustedWeightedSize(), is(weightedSize));
+      desc.expectThat(error, expectedWeightedSize, is(weightedSize));
     }
   }
 

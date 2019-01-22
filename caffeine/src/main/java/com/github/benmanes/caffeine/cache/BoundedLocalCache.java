@@ -152,6 +152,14 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
   static final double PERCENT_MAIN = 0.99d;
   /** The percent of the maximum weighted capacity dedicated to the main's protected space. */
   static final double PERCENT_MAIN_PROTECTED = 0.80d;
+  /** The size of the sample period (1.0 = 100%). */
+  static final int HILL_CLIMBER_SAMPLE_RATE = 10;
+  /** The difference in hit rates that restarts the climber. */
+  static final double HILL_CLIMBER_RESTART_THRESHOLD = 0.05d;
+  /** The percent of the total size to adapt the window by. */
+  static final double HILL_CLIMBER_STEP_PERCENT = 0.0625d;
+  /** The rate to decrease the step size to adapt by. */
+  static final double HILL_CLIMBER_STEP_DECAY_RATE = 0.98d;
   /** The maximum time window between entry updates before the expiration must be reordered. */
   static final long EXPIRE_WRITE_TOLERANCE = TimeUnit.SECONDS.toNanos(1);
   /** The maximum duration before an entry expires. */
@@ -201,7 +209,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     return 1 << -Integer.numberOfLeadingZeros(x - 1);
   }
 
-  /* ---------------- Shared -------------- */
+  /* --------------- Shared --------------- */
 
   /** Returns if the node's value is currently being computed, asynchronously. */
   final boolean isComputingAsync(Node<?, ?> node) {
@@ -247,7 +255,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     return (writer != CacheWriter.disabledWriter());
   }
 
-  /* ---------------- Stats Support -------------- */
+  /* --------------- Stats Support -------------- */
 
   @Override
   public boolean isRecordingStats() {
@@ -264,7 +272,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     return Ticker.disabledTicker();
   }
 
-  /* ---------------- Removal Listener Support -------------- */
+  /* --------------- Removal Listener Support -------------- */
 
   @Override
   @SuppressWarnings("NullAway")
@@ -295,7 +303,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     }
   }
 
-  /* ---------------- Reference Support -------------- */
+  /* --------------- Reference Support -------------- */
 
   /** Returns if the keys are weak reference garbage collected. */
   protected boolean collectKeys() {
@@ -317,7 +325,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     return null;
   }
 
-  /* ---------------- Expiration Support -------------- */
+  /* --------------- Expiration Support -------------- */
 
   /** Returns if the cache expires entries after a variable time threshold. */
   protected boolean expiresVariable() {
@@ -385,7 +393,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     throw new UnsupportedOperationException();
   }
 
-  /* ---------------- Eviction Support -------------- */
+  /* --------------- Eviction Support -------------- */
 
   /** Returns if the cache evicts entries due to a maximum size or weight threshold. */
   protected boolean evicts() {
@@ -436,34 +444,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Sets the maximum weighted size of the cache. The caller may need to perform a maintenance cycle
-   * to eagerly evicts entries until the cache shrinks to the appropriate size.
-   */
-  @GuardedBy("evictionLock")
-  void setMaximum(long maximum) {
-    requireArgument(maximum >= 0);
-
-    long max = Math.min(maximum, MAXIMUM_CAPACITY);
-    long eden = max - (long) (max * PERCENT_MAIN);
-    long mainProtected = (long) ((max - eden) * PERCENT_MAIN_PROTECTED);
-
-    lazySetMaximum(max);
-    lazySetEdenMaximum(eden);
-    lazySetMainProtectedMaximum(mainProtected);
-
-    if ((frequencySketch() != null) && !isWeighted() && (weightedSize() >= (max >>> 1))) {
-      // Lazily initialize when close to the maximum size
-      frequencySketch().ensureCapacity(max);
-    }
-  }
-
-  /** Returns the combined weight of the values in the cache. */
-  long adjustedWeightedSize() {
-    return Math.max(0, weightedSize());
-  }
-
-  /** Returns the uncorrected combined weight of the values in the cache. */
+  /** Returns the combined weight of the values in the cache (may be negative). */
   protected long weightedSize() {
     throw new UnsupportedOperationException();
   }
@@ -491,6 +472,77 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
   @GuardedBy("evictionLock") // must write under lock
   protected void lazySetMainProtectedWeightedSize(long weightedSize) {
     throw new UnsupportedOperationException();
+  }
+
+  protected int hitsInSample() {
+    throw new UnsupportedOperationException();
+  }
+
+  protected int missesInSample() {
+    throw new UnsupportedOperationException();
+  }
+
+  protected int sampleCount() {
+    throw new UnsupportedOperationException();
+  }
+
+  protected double stepSize() {
+    throw new UnsupportedOperationException();
+  }
+
+  protected double previousSampleHitRate() {
+    throw new UnsupportedOperationException();
+  }
+
+  @GuardedBy("evictionLock") // must write under lock
+  protected void setHitsInSample(int hitCount) {
+    throw new UnsupportedOperationException();
+  }
+
+  @GuardedBy("evictionLock") // must write under lock
+  protected void setMissesInSample(int missCount) {
+    throw new UnsupportedOperationException();
+  }
+
+  @GuardedBy("evictionLock") // must write under lock
+  protected void setSampleCount(int sampleCount) {
+    throw new UnsupportedOperationException();
+  }
+
+  @GuardedBy("evictionLock") // must write under lock
+  protected void setStepSize(double stepSize) {
+    throw new UnsupportedOperationException();
+  }
+
+  @GuardedBy("evictionLock") // must write under lock
+  protected void setPreviousSampleHitRate(double hitRate) {
+    throw new UnsupportedOperationException();
+  }
+
+  /**
+   * Sets the maximum weighted size of the cache. The caller may need to perform a maintenance cycle
+   * to eagerly evicts entries until the cache shrinks to the appropriate size.
+   */
+  @GuardedBy("evictionLock")
+  void setMaximum(long maximum) {
+    requireArgument(maximum >= 0);
+
+    long max = Math.min(maximum, MAXIMUM_CAPACITY);
+    long eden = max - (long) (PERCENT_MAIN * max);
+    long mainProtected = (long) (PERCENT_MAIN_PROTECTED * (max - eden));
+
+    lazySetMaximum(max);
+    lazySetEdenMaximum(eden);
+    lazySetMainProtectedMaximum(mainProtected);
+
+    setHitsInSample(0);
+    setMissesInSample(0);
+    setStepSize(HILL_CLIMBER_STEP_PERCENT * max);
+
+    if ((frequencySketch() != null) && !isWeighted() && (weightedSize() >= (max >>> 1))) {
+      // Lazily initialize when close to the maximum size
+      frequencySketch().ensureCapacity(max);
+    }
   }
 
   /** Evicts entries if the cache exceeds the maximum. */
@@ -829,6 +881,31 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     }
 
     return true;
+  }
+
+  @GuardedBy("evictionLock")
+  long adapt() {
+    int requestCount = hitsInSample() + missesInSample();
+    if (requestCount < sampleCount()) {
+      return 0L;
+    } else if (frequencySketch().isNotInitialized()) {
+      setMissesInSample(0);
+      setHitsInSample(0);
+      return 0L;
+    }
+
+    double hitRate = (double) hitsInSample() / requestCount;
+    double adjustment = (hitRate >= previousSampleHitRate()) ? stepSize() : -stepSize();
+    if (Math.abs(hitRate - previousSampleHitRate()) >= HILL_CLIMBER_RESTART_THRESHOLD) {
+      setStepSize(HILL_CLIMBER_STEP_PERCENT * maximum());
+    } else {
+      setStepSize(HILL_CLIMBER_STEP_DECAY_RATE * adjustment);
+    }
+    setPreviousSampleHitRate(hitRate);
+    setMissesInSample(0);
+    setHitsInSample(0);
+
+    return (long) adjustment;
   }
 
   /**
@@ -1204,6 +1281,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
       } else {
         reorder(accessOrderProtectedDeque(), node);
       }
+      setHitsInSample(hitsInSample() + 1);
     } else if (expiresAfterAccess()) {
       reorder(accessOrderEdenDeque(), node);
     }
@@ -1324,6 +1402,8 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
         if (key != null) {
           frequencySketch().increment(key);
         }
+
+        setMissesInSample(missesInSample() + 1);
       }
 
       // ignore out-of-order write operations
@@ -1420,7 +1500,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     }
   }
 
-  /* ---------------- Concurrent Map Support -------------- */
+  /* --------------- Concurrent Map Support -------------- */
 
   @Override
   public boolean isEmpty() {
@@ -3032,7 +3112,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     return proxy;
   }
 
-  /* ---------------- Manual Cache -------------- */
+  /* --------------- Manual Cache -------------- */
 
   static class BoundedLocalManualCache<K, V> implements LocalManualCache<K, V>, Serializable {
     private static final long serialVersionUID = 1;
@@ -3151,7 +3231,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
         if (cache.evicts() && isWeighted()) {
           cache.evictionLock.lock();
           try {
-            return OptionalLong.of(cache.adjustedWeightedSize());
+            return OptionalLong.of(Math.max(0, cache.weightedSize()));
           } finally {
             cache.evictionLock.unlock();
           }
@@ -3355,7 +3435,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     }
   }
 
-  /* ---------------- Loading Cache -------------- */
+  /* --------------- Loading Cache -------------- */
 
   static final class BoundedLocalLoadingCache<K, V>
       extends BoundedLocalManualCache<K, V> implements LocalLoadingCache<K, V> {
@@ -3414,7 +3494,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     }
   }
 
-  /* ---------------- Async Cache -------------- */
+  /* --------------- Async Cache -------------- */
 
   static final class BoundedLocalAsyncCache<K, V> implements LocalAsyncCache<K, V>, Serializable {
     private static final long serialVersionUID = 1;
@@ -3469,7 +3549,7 @@ abstract class BoundedLocalCache<K, V> extends BLCHeader.DrainStatusRef<K, V>
     }
   }
 
-  /* ---------------- Async Loading Cache -------------- */
+  /* --------------- Async Loading Cache -------------- */
 
   static final class BoundedLocalAsyncLoadingCache<K, V>
       extends LocalAsyncLoadingCache<K, V> implements Serializable {

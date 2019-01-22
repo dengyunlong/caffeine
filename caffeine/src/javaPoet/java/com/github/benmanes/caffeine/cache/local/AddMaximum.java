@@ -49,6 +49,7 @@ public final class AddMaximum extends LocalCacheRule {
     addWeightedSize("eden");
     addWeightedSize("mainProtected");
     addFrequencySketch();
+    addHillClimber();
   }
 
   private void addEvicts() {
@@ -107,6 +108,28 @@ public final class AddMaximum extends LocalCacheRule {
         .addModifiers(context.protectedFinalModifiers())
         .addStatement("return sketch")
         .returns(FREQUENCY_SKETCH)
+        .build());
+  }
+
+  private void addHillClimber() {
+    addField(double.class, "stepSize");
+    addField(int.class, "sampleCount");
+    addField(int.class, "hitsInSample");
+    addField(int.class, "missesInSample");
+    addField(double.class, "previousSampleHitRate");
+  }
+
+  private void addField(Class<?> type, String name) {
+    context.cache.addField(FieldSpec.builder(type, name).build());
+    context.cache.addMethod(MethodSpec.methodBuilder(name)
+        .addModifiers(context.protectedFinalModifiers())
+        .addStatement("return $L", name)
+        .returns(type)
+        .build());
+    context.cache.addMethod(MethodSpec.methodBuilder("set" + capitalize(name))
+        .addModifiers(context.protectedFinalModifiers())
+        .addParameter(type, name)
+        .addStatement("this.$1L = $1L", name)
         .build());
   }
 }

@@ -170,7 +170,7 @@ public final class BoundedLocalCacheTest {
     cache.put(2, 2);
 
     assertThat(map.size(), is(1));
-    assertThat(map.adjustedWeightedSize(), is(BoundedLocalCache.MAXIMUM_CAPACITY));
+    assertThat(Math.max(0, map.weightedSize()), is(BoundedLocalCache.MAXIMUM_CAPACITY));
   }
 
   @Test(dataProvider = "caches")
